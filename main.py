@@ -1,6 +1,5 @@
 import datetime
 import time
-import calendar
 import yfinance as yf
 import pandas as pd
 import pytz
@@ -9,10 +8,12 @@ import requests
 import warnings
 warnings.filterwarnings("ignore")
 
+# ==============================================================================
 # ⚙️ MASTER INSTITUTIONAL SETTINGS
+# ==============================================================================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-MAX_TRADES_PER_DAY = 12  # 👈 कोटा बढ़ाकर 12 कर दिया गया है
+MAX_TRADES_PER_DAY = 12  # 👈 कोटा 12 ट्रेड्स
 
 # 👑 REPUTED F&O STOCKS WATCHLIST
 REPUTED_STOCKS = ["RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "SBIN.NS", "TCS.NS"]
@@ -20,7 +21,7 @@ REPUTED_STOCKS = ["RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "SBIN
 TRADES_TAKEN_TODAY = 0
 TODAYS_DATE = None
 DAILY_SIGNALS_COUNT = 0
-LAST_SIGNAL_DICT = {} # 👈 स्पैम रोकने के लिए नई मेमोरी डिक्शनरी
+LAST_SIGNAL_DICT = {} # 👈 स्पैम रोकने के लिए मेमोरी डिक्शनरी
 
 def send_telegram_msg(message):
     try:
@@ -42,19 +43,18 @@ def clean_df(df):
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     return df.dropna()
 
-def get_monthly_expiry():
-    today = datetime.date.today()
-    y, m = today.year, today.month
-    cal = calendar.monthcalendar(y, m)
-    last_thursday = cal[-1][3] if cal[-1][3] != 0 else cal[-2][3]
-    exp_date = datetime.date(y, m, last_thursday)
-    
-    if today > exp_date:
-        y, m = (y+1, 1) if m == 12 else (y, m+1)
-        cal = calendar.monthcalendar(y, m)
-        last_thursday = cal[-1][3] if cal[-1][3] != 0 else cal[-2][3]
-        exp_date = datetime.date(y, m, last_thursday)
-    return exp_date.strftime("%d-%b-%Y")
+# 🛠️ NEW LIVE EXPIRY FETCHER (Fixes the 2026/Holiday mismatch)
+def get_real_expiry(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        expiries = ticker.options
+        if expiries:
+            raw_date = expiries[0] # करेंट एक्सपायरी उठाएगा
+            date_obj = datetime.datetime.strptime(raw_date, '%Y-%m-%d')
+            return date_obj.strftime("%d-%b-%Y") # आउटपुट: 29-Sep-2022 / 2026
+    except Exception as e:
+        pass
+    return "Current Monthly Expiry"
 
 def check_daily_reset():
     global TRADES_TAKEN_TODAY, DAILY_SIGNALS_COUNT, TODAYS_DATE, LAST_SIGNAL_DICT
@@ -64,7 +64,7 @@ def check_daily_reset():
         TODAYS_DATE = current_date
         TRADES_TAKEN_TODAY = 0
         DAILY_SIGNALS_COUNT = 0
-        LAST_SIGNAL_DICT.clear() # 👈 नया दिन शुरू होने पर मेमोरी साफ़
+        LAST_SIGNAL_DICT.clear() 
         print(f"\n [🔄 NEW DAY] Memory reset for {current_date}.")
 
 def scan_reputed_stocks():
@@ -73,7 +73,7 @@ def scan_reputed_stocks():
     now_ist = datetime.datetime.now(ist)
     
     if TRADES_TAKEN_TODAY >= MAX_TRADES_PER_DAY: return
-    print(f"\n🔓 SCANNING REPUTED STOCKS (V3.1) [{now_ist.strftime('%I:%M %p')}]")
+    print(f"\n🔓 SCANNING REPUTED STOCKS (V3.2) [{now_ist.strftime('%I:%M %p')}]")
 
     if now_ist.time() >= datetime.time(15, 20):
         print(" 🛑 Hard EOD Shield Active. Banning new entries.")
@@ -82,10 +82,11 @@ def scan_reputed_stocks():
         print(" 🛑 Mid-Day Decay Zone. Paused.")
         return
 
-    expiry_str = get_monthly_expiry()
-
     for symbol in REPUTED_STOCKS:
         try:
+            # 👈 अब एक्सपायरी हर स्टॉक के लिए रियल-टाइम चेक होगी
+            expiry_str = get_real_expiry(symbol)
+            
             stock = clean_df(yf.download(symbol, period="5d", interval="5m", progress=False, threads=False))
             daily = clean_df(yf.download(symbol, period="2d", interval="1d", progress=False, threads=False))
             
@@ -146,21 +147,19 @@ def scan_reputed_stocks():
                 logic_str = f"Bearish Trend (Slope: {slope_pct:.2f}%) + Safe VWAP Base"
 
             if signal:
-                # 👈 यहाँ स्पैम चेकर लगाया गया है
                 if stock_name in LAST_SIGNAL_DICT and LAST_SIGNAL_DICT[stock_name] == signal:
                     print(f" 🛡️ ALREADY SENT: {stock_name} {signal}. Holding fire to prevent spam.")
                     continue
                 
-                # नया सिग्नल है, मेमोरी अपडेट करें
                 LAST_SIGNAL_DICT[stock_name] = signal
                 TRADES_TAKEN_TODAY += 1
                 DAILY_SIGNALS_COUNT += 1
                 atm_strike = round(l_close / 10) * 10 if l_close < 1000 else round(l_close / 50) * 50
                 
-                msg = (f"*👑 STOCK F&O PRO MAX v3.1*\n\n"
+                msg = (f"*👑 STOCK F&O PRO MAX v3.2*\n\n"
                        f"⚡ Action: *BUY {signal}*\n"
                        f"📌 Asset: {stock_name} {atm_strike} {signal}\n"
-                       f"📅 Monthly Expiry: {expiry_str}\n"
+                       f"📅 Live Expiry: {expiry_str}\n"
                        f"📉 Spot CMP: ₹{l_close:.2f}\n\n"
                        f"🧠 Logic: {logic_str}\n"
                        f"🛡️ Filters: 17 Gatekeepers Passed (No Sandwich/No FOMO)\n"
@@ -174,8 +173,8 @@ def scan_reputed_stocks():
             print(f" 🔴 Error processing {symbol}: {e}")
 
 if __name__ == "__main__":
-    print("🚀 STOCK F&O MASTER V3.1 ENGINE ONLINE")
-    send_telegram_msg("🟢 *STOCK F&O V3.1 ACTIVE*\nCloud Engine Started (12 Quota, Anti-Spam On)!")
+    print("🚀 STOCK F&O MASTER V3.2 ENGINE ONLINE")
+    send_telegram_msg("🟢 *STOCK F&O V3.2 ACTIVE*\nCloud Engine Started (12 Quota, Anti-Spam On, Live Expiry Sync)!")
     
     while True:
         ist = pytz.timezone("Asia/Kolkata")
