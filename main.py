@@ -12,7 +12,7 @@ warnings.filterwarnings("ignore")
 # ⚙️ MASTER INSTITUTIONAL SETTINGS
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-MAX_TRADES_PER_DAY = 5  
+MAX_TRADES_PER_DAY = 12  # 👈 कोटा बढ़ाकर 12 कर दिया गया है
 
 # 👑 REPUTED F&O STOCKS WATCHLIST
 REPUTED_STOCKS = ["RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "SBIN.NS", "TCS.NS"]
@@ -20,6 +20,7 @@ REPUTED_STOCKS = ["RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "SBIN
 TRADES_TAKEN_TODAY = 0
 TODAYS_DATE = None
 DAILY_SIGNALS_COUNT = 0
+LAST_SIGNAL_DICT = {} # 👈 स्पैम रोकने के लिए नई मेमोरी डिक्शनरी
 
 def send_telegram_msg(message):
     try:
@@ -56,22 +57,23 @@ def get_monthly_expiry():
     return exp_date.strftime("%d-%b-%Y")
 
 def check_daily_reset():
-    global TRADES_TAKEN_TODAY, DAILY_SIGNALS_COUNT, TODAYS_DATE
+    global TRADES_TAKEN_TODAY, DAILY_SIGNALS_COUNT, TODAYS_DATE, LAST_SIGNAL_DICT
     ist = pytz.timezone("Asia/Kolkata")
     current_date = datetime.datetime.now(ist).date()
     if TODAYS_DATE != current_date:
         TODAYS_DATE = current_date
         TRADES_TAKEN_TODAY = 0
         DAILY_SIGNALS_COUNT = 0
+        LAST_SIGNAL_DICT.clear() # 👈 नया दिन शुरू होने पर मेमोरी साफ़
         print(f"\n [🔄 NEW DAY] Memory reset for {current_date}.")
 
 def scan_reputed_stocks():
-    global TRADES_TAKEN_TODAY, DAILY_SIGNALS_COUNT
+    global TRADES_TAKEN_TODAY, DAILY_SIGNALS_COUNT, LAST_SIGNAL_DICT
     ist = pytz.timezone("Asia/Kolkata")
     now_ist = datetime.datetime.now(ist)
     
     if TRADES_TAKEN_TODAY >= MAX_TRADES_PER_DAY: return
-    print(f"\n🔓 SCANNING REPUTED STOCKS (V3.0) [{now_ist.strftime('%I:%M %p')}]")
+    print(f"\n🔓 SCANNING REPUTED STOCKS (V3.1) [{now_ist.strftime('%I:%M %p')}]")
 
     if now_ist.time() >= datetime.time(15, 20):
         print(" 🛑 Hard EOD Shield Active. Banning new entries.")
@@ -144,11 +146,18 @@ def scan_reputed_stocks():
                 logic_str = f"Bearish Trend (Slope: {slope_pct:.2f}%) + Safe VWAP Base"
 
             if signal:
+                # 👈 यहाँ स्पैम चेकर लगाया गया है
+                if stock_name in LAST_SIGNAL_DICT and LAST_SIGNAL_DICT[stock_name] == signal:
+                    print(f" 🛡️ ALREADY SENT: {stock_name} {signal}. Holding fire to prevent spam.")
+                    continue
+                
+                # नया सिग्नल है, मेमोरी अपडेट करें
+                LAST_SIGNAL_DICT[stock_name] = signal
                 TRADES_TAKEN_TODAY += 1
                 DAILY_SIGNALS_COUNT += 1
                 atm_strike = round(l_close / 10) * 10 if l_close < 1000 else round(l_close / 50) * 50
                 
-                msg = (f"*👑 STOCK F&O PRO MAX v3.0*\n\n"
+                msg = (f"*👑 STOCK F&O PRO MAX v3.1*\n\n"
                        f"⚡ Action: *BUY {signal}*\n"
                        f"📌 Asset: {stock_name} {atm_strike} {signal}\n"
                        f"📅 Monthly Expiry: {expiry_str}\n"
@@ -158,15 +167,15 @@ def scan_reputed_stocks():
                        f"📊 Quota: {TRADES_TAKEN_TODAY}/{MAX_TRADES_PER_DAY}\n\n"
                        f"👉 System Validated. Execute carefully!")
                 
-                print(f" 🟢 🔥 SIGNAL FOUND: {stock_name} {signal}")
+                print(f" 🟢 🔥 NEW SIGNAL SENT: {stock_name} {signal}")
                 send_telegram_msg(msg)
 
         except Exception as e:
             print(f" 🔴 Error processing {symbol}: {e}")
 
 if __name__ == "__main__":
-    print("🚀 STOCK F&O MASTER V3.0 ENGINE ONLINE")
-    send_telegram_msg("🟢 *STOCK F&O V3.0 ACTIVE*\nCloud Engine Started Successfully!")
+    print("🚀 STOCK F&O MASTER V3.1 ENGINE ONLINE")
+    send_telegram_msg("🟢 *STOCK F&O V3.1 ACTIVE*\nCloud Engine Started (12 Quota, Anti-Spam On)!")
     
     while True:
         ist = pytz.timezone("Asia/Kolkata")
