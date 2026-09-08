@@ -9,11 +9,11 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # ==============================================================================
-# ⚙️ MASTER INSTITUTIONAL SETTINGS
+# ⚙️ MASTER INSTITUTIONAL SETTINGS (V3.3)
 # ==============================================================================
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-MAX_TRADES_PER_DAY = 12  # 👈 कोटा 12 ट्रेड्स
+MAX_TRADES_PER_DAY = 12
 
 # 👑 REPUTED F&O STOCKS WATCHLIST
 REPUTED_STOCKS = ["RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "SBIN.NS", "TCS.NS"]
@@ -21,7 +21,7 @@ REPUTED_STOCKS = ["RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "SBIN
 TRADES_TAKEN_TODAY = 0
 TODAYS_DATE = None
 DAILY_SIGNALS_COUNT = 0
-LAST_SIGNAL_DICT = {} # 👈 स्पैम रोकने के लिए मेमोरी डिक्शनरी
+LAST_SIGNAL_DICT = {}
 
 def send_telegram_msg(message):
     try:
@@ -43,15 +43,14 @@ def clean_df(df):
     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
     return df.dropna()
 
-# 🛠️ NEW LIVE EXPIRY FETCHER (Fixes the 2026/Holiday mismatch)
 def get_real_expiry(symbol):
     try:
         ticker = yf.Ticker(symbol)
         expiries = ticker.options
         if expiries:
-            raw_date = expiries[0] # करेंट एक्सपायरी उठाएगा
+            raw_date = expiries[0] 
             date_obj = datetime.datetime.strptime(raw_date, '%Y-%m-%d')
-            return date_obj.strftime("%d-%b-%Y") # आउटपुट: 29-Sep-2022 / 2026
+            return date_obj.strftime("%d-%b-%Y") 
     except Exception as e:
         pass
     return "Current Monthly Expiry"
@@ -73,7 +72,7 @@ def scan_reputed_stocks():
     now_ist = datetime.datetime.now(ist)
     
     if TRADES_TAKEN_TODAY >= MAX_TRADES_PER_DAY: return
-    print(f"\n🔓 SCANNING REPUTED STOCKS (V3.2) [{now_ist.strftime('%I:%M %p')}]")
+    print(f"\n🔓 SCANNING REPUTED STOCKS (V3.3) [{now_ist.strftime('%I:%M %p')}]")
 
     if now_ist.time() >= datetime.time(15, 20):
         print(" 🛑 Hard EOD Shield Active. Banning new entries.")
@@ -84,8 +83,8 @@ def scan_reputed_stocks():
 
     for symbol in REPUTED_STOCKS:
         try:
-            # 👈 अब एक्सपायरी हर स्टॉक के लिए रियल-टाइम चेक होगी
             expiry_str = get_real_expiry(symbol)
+            stock_name = symbol.replace(".NS", "")
             
             stock = clean_df(yf.download(symbol, period="5d", interval="5m", progress=False, threads=False))
             daily = clean_df(yf.download(symbol, period="2d", interval="1d", progress=False, threads=False))
@@ -95,6 +94,16 @@ def scan_reputed_stocks():
             current_block = now_ist.replace(minute=(now_ist.minute // 5) * 5, second=0, microsecond=0)
             stock = stock[stock.index < current_block]
             if stock.empty: continue
+
+            # 🛡️ 1% DAILY MOMENTUM GATEKEEPER
+            today_data = stock[stock.index.date == now_ist.date()]
+            if not today_data.empty:
+                day_high = to_float(today_data['High'].max())
+                day_low = to_float(today_data['Low'].min())
+                daily_range_pct = (day_high - day_low) / day_low
+                if daily_range_pct < 0.01:
+                    print(f" 🔕 Filtered: {stock_name} is dead today (Range: {daily_range_pct*100:.2f}%). Need > 1%.")
+                    continue # स्टॉक ने 1% का मूव नहीं दिया, इसे तुरंत इग्नोर करें
 
             stock['Typ'] = (stock['High'] + stock['Low'] + stock['Close']) / 3
             stock['Date'] = stock.index.date
@@ -132,39 +141,44 @@ def scan_reputed_stocks():
             slope_pct = ((ema_now - ema_3_ago) / ema_now) * 100
 
             signal, logic_str = None, ""
-            stock_name = symbol.replace(".NS", "")
 
             if l_close > l_vwap and l_close > l_ema:
                 if not ce_wick_safe or slope_pct < 0.05 or slope_pct > 0.3: continue
                 if not min_dist_passed or not fomo_safe or abs(pdh - l_close)/l_close < 0.001: continue
                 signal = "CE"
-                logic_str = f"Bullish Trend (Slope: +{slope_pct:.2f}%) + Safe VWAP Base"
+                logic_str = f"Bullish Trend (Slope: +{slope_pct:.2f}%) + High Momentum (>1%)"
 
             elif l_close < l_vwap and l_close < l_ema:
                 if not pe_wick_safe or slope_pct > -0.05 or slope_pct < -0.3: continue
                 if not min_dist_passed or not fomo_safe or abs(l_close - pdl)/l_close < 0.001: continue
                 signal = "PE"
-                logic_str = f"Bearish Trend (Slope: {slope_pct:.2f}%) + Safe VWAP Base"
+                logic_str = f"Bearish Trend (Slope: {slope_pct:.2f}%) + High Momentum (>1%)"
 
             if signal:
                 if stock_name in LAST_SIGNAL_DICT and LAST_SIGNAL_DICT[stock_name] == signal:
-                    print(f" 🛡️ ALREADY SENT: {stock_name} {signal}. Holding fire to prevent spam.")
                     continue
                 
                 LAST_SIGNAL_DICT[stock_name] = signal
                 TRADES_TAKEN_TODAY += 1
                 DAILY_SIGNALS_COUNT += 1
-                atm_strike = round(l_close / 10) * 10 if l_close < 1000 else round(l_close / 50) * 50
                 
-                msg = (f"*👑 STOCK F&O PRO MAX v3.2*\n\n"
+                # 🎯 ITM Strike Selection (स्लाइटली इन-द-मनी ताकि प्रीमियम तेज़ी से बढ़े)
+                if l_close < 1000:
+                    atm_strike = round(l_close / 10) * 10
+                    final_strike = atm_strike - 10 if signal == "CE" else atm_strike + 10
+                else:
+                    atm_strike = round(l_close / 50) * 50
+                    final_strike = atm_strike - 20 if signal == "CE" else atm_strike + 20
+                
+                msg = (f"*👑 STOCK F&O PRO MAX v3.3*\n\n"
                        f"⚡ Action: *BUY {signal}*\n"
-                       f"📌 Asset: {stock_name} {atm_strike} {signal}\n"
+                       f"📌 Asset: {stock_name} {final_strike} {signal} (ITM)\n"
                        f"📅 Live Expiry: {expiry_str}\n"
                        f"📉 Spot CMP: ₹{l_close:.2f}\n\n"
                        f"🧠 Logic: {logic_str}\n"
-                       f"🛡️ Filters: 17 Gatekeepers Passed (No Sandwich/No FOMO)\n"
+                       f"🛡️ Filters: 18 Gatekeepers (1% Daily Range Passed)\n"
                        f"📊 Quota: {TRADES_TAKEN_TODAY}/{MAX_TRADES_PER_DAY}\n\n"
-                       f"👉 System Validated. Execute carefully!")
+                       f"👉 System Validated. Hit & Run (Scalp) recommended!")
                 
                 print(f" 🟢 🔥 NEW SIGNAL SENT: {stock_name} {signal}")
                 send_telegram_msg(msg)
@@ -173,8 +187,8 @@ def scan_reputed_stocks():
             print(f" 🔴 Error processing {symbol}: {e}")
 
 if __name__ == "__main__":
-    print("🚀 STOCK F&O MASTER V3.2 ENGINE ONLINE")
-    send_telegram_msg("🟢 *STOCK F&O V3.2 ACTIVE*\nCloud Engine Started (12 Quota, Anti-Spam On, Live Expiry Sync)!")
+    print("🚀 STOCK F&O MASTER V3.3 ENGINE ONLINE")
+    send_telegram_msg("🟢 *STOCK F&O V3.3 ACTIVE*\nCloud Engine Started (1% Range Filter + ITM Strikes Enabled)!")
     
     while True:
         ist = pytz.timezone("Asia/Kolkata")
